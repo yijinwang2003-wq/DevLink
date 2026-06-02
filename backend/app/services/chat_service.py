@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -10,14 +11,21 @@ from app.models.chat import ChatMessage, ChatRoom
 from app.models.user import User
 from app.services.user_service import get_user_by_id, get_user_by_username
 
+HEARTBEAT_INTERVAL_SECONDS = 30
+MAX_CHAT_MESSAGE_CHARS = 2000
+
 
 class ConnectionManager:
     def __init__(self) -> None:
         self.active: dict[str, list[WebSocket]] = {}
+        self.heartbeat_tasks: dict[WebSocket, asyncio.Task[None]] = {}
 
     async def connect(self, websocket: WebSocket, room_id: UUID) -> None:
         await websocket.accept()
         self.active.setdefault(str(room_id), []).append(websocket)
+        self.heartbeat_tasks[websocket] = asyncio.create_task(
+            self._heartbeat(websocket, room_id)
+        )
 
     def disconnect(self, websocket: WebSocket, room_id: UUID) -> None:
         room_key = str(room_id)
@@ -26,6 +34,10 @@ class ConnectionManager:
             connections.remove(websocket)
         if not connections and room_key in self.active:
             del self.active[room_key]
+
+        heartbeat_task = self.heartbeat_tasks.pop(websocket, None)
+        if heartbeat_task is not None and heartbeat_task is not asyncio.current_task():
+            heartbeat_task.cancel()
 
     async def broadcast(self, message: dict[str, str], room_id: UUID) -> None:
         disconnected: list[WebSocket] = []
@@ -36,6 +48,16 @@ class ConnectionManager:
                 disconnected.append(websocket)
         for websocket in disconnected:
             self.disconnect(websocket, room_id)
+
+    async def _heartbeat(self, websocket: WebSocket, room_id: UUID) -> None:
+        try:
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                await websocket.send_json({"type": "ping"})
+        except (RuntimeError, WebSocketDisconnect):
+            self.disconnect(websocket, room_id)
+        except asyncio.CancelledError:
+            raise
 
 
 manager = ConnectionManager()
@@ -51,6 +73,24 @@ def ordered_dm_pair(first_user_id: UUID, second_user_id: UUID) -> tuple[UUID, UU
 
 def room_has_user(room: ChatRoom, user_id: UUID) -> bool:
     return user_id in {room.user_low_id, room.user_high_id}
+
+
+def extract_message_content(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid message payload")
+
+    if payload.get("type") == "pong":
+        return None
+
+    content = payload.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Invalid message content")
+
+    content = content.strip()
+    if len(content) > MAX_CHAT_MESSAGE_CHARS:
+        raise ValueError("Message is too large")
+
+    return content
 
 
 async def create_or_get_dm_room(
@@ -188,11 +228,15 @@ async def handle_websocket_chat(
     try:
         while True:
             payload = await websocket.receive_json()
-            content = payload.get("content")
-            if not isinstance(content, str) or not content.strip():
+            try:
+                content = extract_message_content(payload)
+            except ValueError:
                 await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
-            message = await persist_message(db, room_id, current_user, content.strip())
+            if content is None:
+                continue
+
+            message = await persist_message(db, room_id, current_user, content)
             await manager.broadcast(
                 {
                     "type": message.message_type,
@@ -203,4 +247,6 @@ async def handle_websocket_chat(
                 room_id,
             )
     except WebSocketDisconnect:
+        pass
+    finally:
         manager.disconnect(websocket, room_id)
