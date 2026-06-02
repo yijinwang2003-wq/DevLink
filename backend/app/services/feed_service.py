@@ -40,7 +40,9 @@ async def push_posts_to_feed(user_id: UUID, post_ids: list[UUID]) -> None:
         await redis.aclose()
 
 
-async def seed_follow_feed(db: AsyncSession, follower_id: UUID, following_id: UUID) -> None:
+async def seed_follow_feed(
+    db: AsyncSession, follower_id: UUID, following_id: UUID
+) -> None:
     result = await db.execute(
         select(Post.id)
         .where(Post.author_id == following_id)
@@ -61,7 +63,9 @@ async def invalidate_feed(user_id: UUID) -> None:
 
 
 async def fanout_post_to_followers(db: AsyncSession, post: Post) -> None:
-    result = await db.execute(select(Follow.follower_id).where(Follow.following_id == post.author_id))
+    result = await db.execute(
+        select(Follow.follower_id).where(Follow.following_id == post.author_id)
+    )
     follower_ids = list(result.scalars().all())
     for follower_id in follower_ids:
         await push_posts_to_feed(follower_id, [post.id])

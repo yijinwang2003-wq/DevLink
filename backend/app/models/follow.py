@@ -11,7 +11,9 @@ from app.db.base import Base
 class Follow(Base):
     __tablename__ = "follows"
     __table_args__ = (
-        CheckConstraint("follower_id <> following_id", name="ck_follows_no_self_follow"),
+        CheckConstraint(
+            "follower_id <> following_id", name="ck_follows_no_self_follow"
+        ),
     )
 
     follower_id: Mapped[uuid.UUID] = mapped_column(

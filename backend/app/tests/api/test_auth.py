@@ -30,7 +30,9 @@ async def test_duplicate_email_returns_409(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio()
-async def test_login_returns_access_token_and_refresh_cookie(client: AsyncClient, test_user) -> None:
+async def test_login_returns_access_token_and_refresh_cookie(
+    client: AsyncClient, test_user
+) -> None:
     response = await client.post(
         "/api/v1/auth/login",
         data={"username": test_user.email, "password": "password123"},
@@ -73,7 +75,9 @@ async def test_me_with_token_returns_current_user(
 
 
 @pytest.mark.asyncio()
-async def test_refresh_token_returns_new_access_token(client: AsyncClient, test_user) -> None:
+async def test_refresh_token_returns_new_access_token(
+    client: AsyncClient, test_user
+) -> None:
     login_response = await client.post(
         "/api/v1/auth/login",
         data={"username": test_user.email, "password": "password123"},

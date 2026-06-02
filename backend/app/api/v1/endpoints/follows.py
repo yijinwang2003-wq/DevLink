@@ -8,12 +8,19 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.follow import FollowList, FollowRead
 from app.schemas.user import StatusResponse
-from app.services.follow_service import follow_user, list_followers, list_following, unfollow_user
+from app.services.follow_service import (
+    follow_user,
+    list_followers,
+    list_following,
+    unfollow_user,
+)
 
 router = APIRouter()
 
 
-@router.post("/{username}/follow", response_model=FollowRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{username}/follow", response_model=FollowRead, status_code=status.HTTP_201_CREATED
+)
 async def follow(
     username: str,
     current_user: User = Depends(get_current_user),

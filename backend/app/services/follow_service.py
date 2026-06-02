@@ -23,11 +23,17 @@ async def is_following(db: AsyncSession, follower: User, following: User) -> boo
 async def follow_user(db: AsyncSession, follower: User, username: str) -> Follow:
     following = await get_user_by_username(db, username)
     if following is None or not following.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
     if follower.id == following.id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot follow yourself")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot follow yourself"
+        )
     if await is_following(db, follower, following):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already following user")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Already following user"
+        )
 
     follow = Follow(follower_id=follower.id, following_id=following.id)
     db.add(follow)
@@ -40,7 +46,9 @@ async def follow_user(db: AsyncSession, follower: User, username: str) -> Follow
 async def unfollow_user(db: AsyncSession, follower: User, username: str) -> None:
     following = await get_user_by_username(db, username)
     if following is None or not following.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     await db.execute(
         delete(Follow).where(
@@ -60,7 +68,9 @@ async def list_followers(
 ) -> list[User]:
     user = await get_user_by_username(db, username)
     if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     offset = (page - 1) * size
     result = await db.execute(
@@ -82,7 +92,9 @@ async def list_following(
 ) -> list[User]:
     user = await get_user_by_username(db, username)
     if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     offset = (page - 1) * size
     result = await db.execute(

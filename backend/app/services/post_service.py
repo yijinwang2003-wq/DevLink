@@ -32,14 +32,18 @@ async def create_post(db: AsyncSession, author: User, post_create: PostCreate) -
 async def get_post(db: AsyncSession, post_id: UUID) -> Post:
     post = await db.get(Post, post_id)
     if post is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Post not found"
+        )
     return post
 
 
 async def delete_post(db: AsyncSession, post_id: UUID, current_user: User) -> None:
     post = await get_post(db, post_id)
     if post.author_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete this post")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete this post"
+        )
     await db.execute(delete(Post).where(Post.id == post_id))
     await db.commit()
 

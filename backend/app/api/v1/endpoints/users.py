@@ -40,5 +40,7 @@ async def read_users(
 async def read_user(username: str, db: AsyncSession = Depends(get_db)) -> UserRead:
     user = await get_user_by_username(db, username)
     if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
     return user

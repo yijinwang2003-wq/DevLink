@@ -9,7 +9,11 @@ async def test_create_and_read_post(
 ) -> None:
     create_response = await client.post(
         "/api/v1/posts/",
-        json={"title": "Looking for a FastAPI collaborator", "body": "Build with me", "tags": ["Python"]},
+        json={
+            "title": "Looking for a FastAPI collaborator",
+            "body": "Build with me",
+            "tags": ["Python"],
+        },
         headers=auth_headers,
     )
 
@@ -35,7 +39,9 @@ async def test_delete_post(
     )
     post_id = create_response.json()["id"]
 
-    delete_response = await client.delete(f"/api/v1/posts/{post_id}", headers=auth_headers)
+    delete_response = await client.delete(
+        f"/api/v1/posts/{post_id}", headers=auth_headers
+    )
     read_response = await client.get(f"/api/v1/posts/{post_id}")
 
     assert delete_response.status_code == 200
@@ -52,10 +58,16 @@ async def test_feed_populates_after_follow(
 ) -> None:
     post_response = await client.post(
         "/api/v1/posts/",
-        json={"title": "Open source pairing", "body": "Need a TypeScript reviewer", "tags": ["TypeScript"]},
+        json={
+            "title": "Open source pairing",
+            "body": "Need a TypeScript reviewer",
+            "tags": ["TypeScript"],
+        },
         headers=second_auth_headers,
     )
-    await client.post(f"/api/v1/users/{second_user.username}/follow", headers=auth_headers)
+    await client.post(
+        f"/api/v1/users/{second_user.username}/follow", headers=auth_headers
+    )
 
     feed_response = await client.get("/api/v1/feed/", headers=auth_headers)
 
@@ -76,6 +88,8 @@ async def test_cannot_delete_another_users_post(
         headers=second_auth_headers,
     )
 
-    response = await client.delete(f"/api/v1/posts/{create_response.json()['id']}", headers=auth_headers)
+    response = await client.delete(
+        f"/api/v1/posts/{create_response.json()['id']}", headers=auth_headers
+    )
 
     assert response.status_code == 403
