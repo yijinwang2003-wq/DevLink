@@ -8,34 +8,67 @@ feed caching, WebSocket chat, Docker validation, CI, and test coverage.
 Current scope: backend Phases 1, 2, 3A, and CI/build validation. AI matching,
 OAuth, and frontend work are intentionally not included yet.
 
+## Tech Stack
+
+| Area | Technology |
+|---|---|
+| Backend API | Python, FastAPI, Pydantic v2 |
+| Persistence | PostgreSQL 16, SQLAlchemy 2.x async ORM |
+| Migrations | Alembic |
+| Authentication | JWT access tokens, httpOnly refresh token cookie |
+| Cache / Pub-Sub | Redis 7 |
+| Realtime | FastAPI WebSocket |
+| Testing | pytest, pytest-asyncio, pytest-cov, httpx |
+| Quality | Ruff format/check |
+| Infra | Docker Compose, backend Dockerfile, GitHub Actions |
+
 ## Architecture Overview
 
 ```mermaid
-flowchart LR
-    Client[API Client / Browser] -->|REST JSON| API[FastAPI API Layer]
-    Client -->|WebSocket token auth| WS[FastAPI WebSocket Endpoint]
+flowchart TB
+    REST[REST API Clients] -->|HTTP JSON| Docker[Dockerized Backend]
+    WSClients[WebSocket Clients] -->|/ws/chat/{room_id}?token=jwt| Docker
 
-    API --> Auth[Auth Service]
-    API --> Users[User Service]
-    API --> Follows[Follow Service]
-    API --> Posts[Post Service]
-    API --> Feed[Feed Service]
-    API --> Chat[Chat Service]
-    WS --> Chat
+    subgraph DockerRuntime[Docker / Docker Compose]
+        Docker --> FastAPI[FastAPI App]
+        FastAPI --> API[API Layer]
+        FastAPI --> WSEndpoint[WebSocket Endpoint]
+        API --> Services[Service Layer]
+        WSEndpoint --> Services
+        Services --> PG[(PostgreSQL 16)]
+        Services --> Redis[(Redis 7)]
+    end
 
-    Auth --> PG[(PostgreSQL 16)]
-    Users --> PG
-    Follows --> PG
-    Posts --> PG
-    Chat --> PG
+    Services --> Auth[Auth]
+    Services --> Users[Users]
+    Services --> Follows[Follows]
+    Services --> Posts[Posts]
+    Services --> Feed[Feed Cache]
+    Services --> Chat[Chat Rooms]
 
-    Feed --> Redis[(Redis 7)]
-    Chat -. prepared pub/sub .-> Redis
+    GHA[GitHub Actions] -->|ruff check / pytest / docker build| Docker
 ```
 
 The API layer is intentionally thin: FastAPI endpoints validate input, resolve
 dependencies, and call service functions. Business logic lives in `app/services`,
 while SQLAlchemy models and Alembic migrations own persistence.
+
+## Production Engineering Highlights
+
+- JWT authentication uses short-lived access tokens and an httpOnly refresh
+  token cookie.
+- SQLAlchemy is configured with async sessions and PostgreSQL-backed models.
+- Alembic migrations track every schema change for users, follows, posts, chat
+  rooms, and chat messages.
+- Redis caches personalized feed IDs and keeps feed reads fast after cache warmup.
+- WebSocket chat authenticates the connection with a JWT query token and checks
+  room membership before accepting the socket.
+- Chat messages are persisted to PostgreSQL before broadcast, so delivery does
+  not race ahead of durable storage.
+- Redis Pub/Sub publisher/subscriber classes are prepared for cross-worker chat
+  delivery in a future scaling pass.
+- CI runs lint, tests, and backend Docker build validation.
+- The backend is Dockerized with a production-style Uvicorn entrypoint.
 
 ## Core Flows
 
@@ -185,6 +218,15 @@ docker compose up -d postgres redis
 docker compose ps
 ```
 
+Run the backend API locally after services are healthy:
+
+```bash
+cd backend
+../.venv/bin/uvicorn app.main:app --reload
+```
+
+API docs are available at `http://localhost:8000/docs`.
+
 Run backend checks:
 
 ```bash
@@ -208,6 +250,13 @@ cd backend
 ../.venv/bin/alembic upgrade head
 ```
 
+Create a new migration after model changes:
+
+```bash
+cd backend
+../.venv/bin/alembic revision --autogenerate -m "describe change"
+```
+
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -220,6 +269,28 @@ cd backend
 | `REFRESH_TOKEN_EXPIRE_DAYS` | No | Refresh token lifetime |
 | `OPENAI_API_KEY` | Future | Reserved for AI matching work |
 
+## Docker Commands
+
+Start PostgreSQL and Redis:
+
+```bash
+docker compose up -d postgres redis
+docker compose ps
+```
+
+View service logs:
+
+```bash
+docker compose logs postgres
+docker compose logs redis
+```
+
+Build the backend image locally:
+
+```bash
+docker build ./backend -t devlink-backend:ci
+```
+
 ## Testing
 
 The Phase 3A backend branch currently validates with:
@@ -231,6 +302,43 @@ The Phase 3A backend branch currently validates with:
 
 Coverage includes auth, users, follows, posts/feed, chat room APIs, chat service
 message persistence, message history pagination, and WebSocket authorization.
+
+Use the same local validation commands before opening or merging a pull request:
+
+```bash
+cd backend
+../.venv/bin/ruff format app
+../.venv/bin/ruff check app
+../.venv/bin/python -m pytest --cov=app -v
+```
+
+## WebSocket Chat Usage
+
+Create or get a direct-message room with:
+
+```http
+POST /api/v1/chat/rooms/
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{"recipient_username":"alice"}
+```
+
+Connect to the room with the access token as a query parameter:
+
+```text
+ws://localhost:8000/ws/chat/{room_id}?token=<access_token>
+```
+
+Send messages as JSON:
+
+```json
+{"type":"message","content":"hello"}
+```
+
+The server persists the message, refreshes the room `updated_at`, then broadcasts
+the saved message to connected sockets in that room. Message history is available
+through `GET /api/v1/chat/rooms/{room_id}/messages?page=1&size=50`.
 
 ## Deployment
 
