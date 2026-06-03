@@ -1,12 +1,15 @@
 # DevLink
 
+[![CI](https://github.com/yijinwang2003-wq/DevLink/actions/workflows/ci.yml/badge.svg)](https://github.com/yijinwang2003-wq/DevLink/actions/workflows/ci.yml)
+
 DevLink is a backend-focused developer networking platform for finding project
 collaborators and referral connections. The current implementation covers
 production-style REST APIs, JWT authentication, PostgreSQL persistence, Redis
-feed caching, WebSocket chat, Docker validation, CI, and test coverage.
+feed caching, WebSocket chat, AI skill matching, Docker validation, CI, and test
+coverage.
 
-Current scope: backend Phases 1, 2, 3A, and CI/build validation. AI matching,
-OAuth, and frontend work are intentionally not included yet.
+Current scope: backend Phases 1, 2, 3A, 3B, and CI/build validation. OAuth and
+frontend work are intentionally not included yet.
 
 ## Tech Stack
 
@@ -18,6 +21,7 @@ OAuth, and frontend work are intentionally not included yet.
 | Authentication | JWT access tokens, httpOnly refresh token cookie |
 | Cache / Pub-Sub | Redis 7 |
 | Realtime | FastAPI WebSocket |
+| AI | OpenAI `gpt-4o-mini`, `text-embedding-3-small` |
 | Testing | pytest, pytest-asyncio, pytest-cov, httpx |
 | Quality | Ruff format/check |
 | Infra | Docker Compose, backend Dockerfile, GitHub Actions |
@@ -45,6 +49,10 @@ flowchart TB
     Services --> Posts[Posts]
     Services --> Feed[Feed Cache]
     Services --> Chat[Chat Rooms]
+    Services --> AI[AI Matching]
+    AI --> OpenAI[OpenAI API]
+    AI --> Embeddings[Stored User Embeddings]
+    Embeddings --> PG
 
     GHA[GitHub Actions] -->|ruff check / pytest / docker build| Docker
 ```
@@ -59,12 +67,16 @@ while SQLAlchemy models and Alembic migrations own persistence.
   token cookie.
 - SQLAlchemy is configured with async sessions and PostgreSQL-backed models.
 - Alembic migrations track every schema change for users, follows, posts, chat
-  rooms, and chat messages.
+  rooms, chat messages, and user embeddings.
 - Redis caches personalized feed IDs and keeps feed reads fast after cache warmup.
 - WebSocket chat authenticates the connection with a JWT query token and checks
   room membership before accepting the socket.
 - Chat messages are persisted to PostgreSQL before broadcast, so delivery does
   not race ahead of durable storage.
+- AI skill extraction uses `gpt-4o-mini`; skill matching uses persisted
+  `text-embedding-3-small` vectors to avoid repeated embedding calls for every
+  candidate.
+- Match results are cached in Redis under `match:{user_id}` for one hour.
 - Redis Pub/Sub publisher/subscriber classes are prepared for cross-worker chat
   delivery in a future scaling pass.
 - CI runs lint, tests, and backend Docker build validation.
@@ -153,6 +165,45 @@ The current chat path works for a single FastAPI instance. Redis channel classes
 are present for future horizontal scaling, using one channel per room:
 `room:{room_id}`.
 
+### AI Matching And Embedding Persistence Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as AI API
+    participant AS as AI Service
+    participant DB as PostgreSQL
+    participant R as Redis
+    participant OAI as OpenAI
+
+    C->>API: POST /api/v1/ai/extract-skills
+    API->>AS: extract_skills(resume_text)
+    AS->>OAI: gpt-4o-mini
+    OAI-->>AS: JSON skill array
+    AS-->>API: normalized skills
+
+    C->>API: GET /api/v1/ai/matches
+    API->>AS: match_users(current_user)
+    AS->>R: read match:{user_id}
+    alt cache hit
+        R-->>AS: user ids + scores
+        AS->>DB: load matched users
+    else cache miss
+        AS->>DB: load current user and candidates
+        AS->>DB: read stored embeddings
+        opt missing embedding
+            AS->>OAI: text-embedding-3-small
+            AS->>DB: persist users.embedding
+        end
+        AS->>R: cache ids + scores for 1 hour
+    end
+    AS-->>API: matched users with similarity scores
+```
+
+User embeddings are stored on the `users.embedding` JSON column. Embeddings are
+generated when users are created, regenerated when skills change, and lazily
+created during matching if an existing profile is missing an embedding.
+
 ## API Reference
 
 ### Auth
@@ -203,6 +254,14 @@ are present for future horizontal scaling, using one channel per room:
 WebSocket messages larger than 2000 characters are rejected with
 `WS_1003_UNSUPPORTED_DATA`. The server sends heartbeat pings every 30 seconds.
 
+### AI
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/ai/extract-skills` | Bearer | Extract normalized technical skills from resume text |
+| `GET` | `/api/v1/ai/matches?top_k=10` | Bearer | Return matched users with similarity scores |
+| `POST` | `/api/v1/ai/reindex/{user_id}` | Bearer admin placeholder | Regenerate and persist one user's embedding |
+
 ## Local Development
 
 Create a local environment file from the example and fill in required secrets:
@@ -222,7 +281,7 @@ Run the backend API locally after services are healthy:
 
 ```bash
 cd backend
-../.venv/bin/uvicorn app.main:app --reload
+make run
 ```
 
 API docs are available at `http://localhost:8000/docs`.
@@ -231,9 +290,9 @@ Run backend checks:
 
 ```bash
 cd backend
-../.venv/bin/ruff format app
-../.venv/bin/ruff check app
-../.venv/bin/python -m pytest --cov=app -v
+make format
+make lint
+make test
 ```
 
 If your local PostgreSQL volume only contains the default `devlink` database,
@@ -247,7 +306,7 @@ Apply migrations:
 
 ```bash
 cd backend
-../.venv/bin/alembic upgrade head
+make migrate
 ```
 
 Create a new migration after model changes:
@@ -267,7 +326,7 @@ cd backend
 | `ALGORITHM` | No | JWT algorithm, defaults to `HS256` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | No | Refresh token lifetime |
-| `OPENAI_API_KEY` | Future | Reserved for AI matching work |
+| `OPENAI_API_KEY` | AI matching | Required for live skill extraction and embedding generation |
 
 ## Docker Commands
 
@@ -277,6 +336,9 @@ Start PostgreSQL and Redis:
 docker compose up -d postgres redis
 docker compose ps
 ```
+
+Both services include healthchecks. PostgreSQL uses `pg_isready`; Redis uses
+`redis-cli ping`.
 
 View service logs:
 
@@ -293,15 +355,17 @@ docker build ./backend -t devlink-backend:ci
 
 ## Testing
 
-The Phase 3A backend branch currently validates with:
+The AI matching backend branch currently validates with:
 
 ```text
-31 passed
-85% coverage
+41 passed
+87% coverage
 ```
 
 Coverage includes auth, users, follows, posts/feed, chat room APIs, chat service
-message persistence, message history pagination, and WebSocket authorization.
+message persistence, message history pagination, WebSocket authorization, AI
+skill extraction, embedding persistence, match ranking, Redis fallback, and
+reindexing.
 
 Use the same local validation commands before opening or merging a pull request:
 
@@ -310,6 +374,15 @@ cd backend
 ../.venv/bin/ruff format app
 ../.venv/bin/ruff check app
 ../.venv/bin/python -m pytest --cov=app -v
+```
+
+The same checks are available through `backend/Makefile`:
+
+```bash
+cd backend
+make format
+make lint
+make test
 ```
 
 ## WebSocket Chat Usage
@@ -339,6 +412,69 @@ Send messages as JSON:
 The server persists the message, refreshes the room `updated_at`, then broadcasts
 the saved message to connected sockets in that room. Message history is available
 through `GET /api/v1/chat/rooms/{room_id}/messages?page=1&size=50`.
+
+## AI Matching API Examples
+
+Extract skills:
+
+```http
+POST /api/v1/ai/extract-skills
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "resume_text": "Backend engineer using Python, FastAPI, PostgreSQL, Redis."
+}
+```
+
+Example response:
+
+```json
+{
+  "skills": ["python", "fastapi", "postgresql", "redis"]
+}
+```
+
+Get matches:
+
+```http
+GET /api/v1/ai/matches?top_k=10
+Authorization: Bearer <access_token>
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": "8f4b2d88-7e53-4e6f-83a7-2c9e2d5b8c10",
+    "email": "alice@example.com",
+    "username": "alice",
+    "bio": "Backend engineer",
+    "avatar_url": null,
+    "skills": ["python", "fastapi", "redis"],
+    "github_url": "https://github.com/alice",
+    "created_at": "2026-06-03T20:00:00Z",
+    "similarity_score": 0.91
+  }
+]
+```
+
+Reindex one user embedding:
+
+```http
+POST /api/v1/ai/reindex/{user_id}
+Authorization: Bearer <admin_access_token>
+```
+
+Example response:
+
+```json
+{
+  "user_id": "8f4b2d88-7e53-4e6f-83a7-2c9e2d5b8c10",
+  "embedding_dimensions": 1536
+}
+```
 
 ## Deployment
 
