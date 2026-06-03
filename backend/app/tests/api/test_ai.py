@@ -4,6 +4,7 @@ import pytest
 from redis import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import create_access_token
 from app.models.user import User
 from app.schemas.user import UserCreate
 from app.services import ai_service
@@ -132,3 +133,140 @@ async def test_match_users_falls_back_when_redis_unavailable(
     assert len(matches) == 1
     assert matches[0].username == "bob"
     assert matches[0].similarity_score == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_and_store_embedding_persists_embedding(
+    db: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_user.skills = ["python", "fastapi"]
+    await db.commit()
+
+    async def fake_embedding(skills: list[str]) -> list[float]:
+        assert skills == ["python", "fastapi"]
+        return [0.1, 0.9]
+
+    monkeypatch.setattr(ai_service, "get_skill_embedding", fake_embedding)
+
+    embedding = await ai_service.generate_and_store_embedding(db, test_user)
+    await db.commit()
+    await db.refresh(test_user)
+
+    assert embedding == [0.1, 0.9]
+    assert test_user.embedding == [0.1, 0.9]
+
+
+@pytest.mark.asyncio
+async def test_user_skill_update_stores_embedding(
+    client,
+    test_user: User,
+    auth_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_generate(db: AsyncSession, user: User) -> list[float]:
+        user.embedding = [0.4, 0.6]
+        return [0.4, 0.6]
+
+    monkeypatch.setattr(ai_service, "try_generate_and_store_embedding", fake_generate)
+
+    response = await client.put(
+        "/api/v1/users/me",
+        json={"skills": ["Python", "FastAPI"]},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert test_user.embedding == [0.4, 0.6]
+
+
+@pytest.mark.asyncio
+async def test_match_users_uses_stored_embeddings_without_openai(
+    db: AsyncSession,
+    test_user: User,
+    second_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_user.skills = ["python"]
+    test_user.embedding = [1.0, 0.0]
+    second_user.skills = ["fastapi"]
+    second_user.embedding = [0.8, 0.2]
+    db.add_all([test_user, second_user])
+    await db.commit()
+
+    async def fail_embedding(skills: list[str]) -> list[float]:
+        raise AssertionError("OpenAI embedding should not be called")
+
+    monkeypatch.setattr(ai_service, "get_skill_embedding", fail_embedding)
+
+    matches = await ai_service.match_users(db, test_user)
+
+    assert len(matches) == 1
+    assert matches[0].username == "bob"
+    assert matches[0].similarity_score > 0
+
+
+@pytest.mark.asyncio
+async def test_missing_embedding_is_regenerated(
+    db: AsyncSession,
+    test_user: User,
+    second_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_user.skills = ["python"]
+    test_user.embedding = [1.0, 0.0]
+    second_user.skills = ["redis"]
+    second_user.embedding = None
+    db.add_all([test_user, second_user])
+    await db.commit()
+
+    calls: list[list[str]] = []
+
+    async def fake_embedding(skills: list[str]) -> list[float]:
+        calls.append(skills)
+        return [0.7, 0.3]
+
+    monkeypatch.setattr(ai_service, "get_skill_embedding", fake_embedding)
+
+    matches = await ai_service.match_users(db, test_user)
+    await db.refresh(second_user)
+
+    assert calls == [["redis"]]
+    assert second_user.embedding == [0.7, 0.3]
+    assert matches[0].username == "bob"
+
+
+@pytest.mark.asyncio
+async def test_reindex_endpoint(
+    client,
+    db: AsyncSession,
+    second_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = await create_user(
+        db,
+        UserCreate(email="admin@example.com", username="admin", password="password123"),
+    )
+    second_user.skills = ["python"]
+    db.add(second_user)
+    await db.commit()
+
+    async def fake_embedding(skills: list[str]) -> list[float]:
+        return [0.3, 0.7, 0.2]
+
+    monkeypatch.setattr(ai_service, "get_skill_embedding", fake_embedding)
+
+    token = create_access_token({"sub": str(admin.id)})
+    response = await client.post(
+        f"/api/v1/ai/reindex/{second_user.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": str(second_user.id),
+        "embedding_dimensions": 3,
+    }
+    await db.refresh(second_user)
+    assert second_user.embedding == [0.3, 0.7, 0.2]

@@ -24,3 +24,8 @@ class MatchedUserRead(BaseModel):
     github_url: str | None = None
     created_at: datetime
     similarity_score: float
+
+
+class EmbeddingReindexResponse(BaseModel):
+    user_id: uuid.UUID
+    embedding_dimensions: int

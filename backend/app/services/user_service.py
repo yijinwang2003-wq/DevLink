@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate
+from app.services import ai_service
 
 
 async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID) -> User | None:
@@ -47,6 +48,7 @@ async def create_user(db: AsyncSession, user_create: UserCreate) -> User:
         skills=[],
     )
     db.add(user)
+    await ai_service.try_generate_and_store_embedding(db, user)
     await db.commit()
     await db.refresh(user)
     return user
@@ -61,13 +63,16 @@ async def authenticate_user(db: AsyncSession, email: str, password: str) -> User
 
 async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> User:
     update_data = user_update.model_dump(exclude_unset=True)
-    if "skills" in update_data and update_data["skills"] is not None:
+    skills_changed = "skills" in update_data
+    if skills_changed and update_data["skills"] is not None:
         normalized_skills = [
             skill.strip().lower() for skill in update_data["skills"] if skill.strip()
         ]
         update_data["skills"] = list(dict.fromkeys(normalized_skills))
     for field, value in update_data.items():
         setattr(user, field, value)
+    if skills_changed:
+        await ai_service.try_generate_and_store_embedding(db, user)
     await db.commit()
     await db.refresh(user)
     return user

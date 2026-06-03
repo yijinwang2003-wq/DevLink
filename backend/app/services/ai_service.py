@@ -3,6 +3,7 @@ import math
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from openai import OpenAIError
 from openai import AsyncOpenAI
 from redis import RedisError
 from redis.asyncio import Redis
@@ -155,6 +156,18 @@ async def write_cached_matches(user_id: UUID, matches: list[MatchedUserRead]) ->
             await redis.aclose()
 
 
+async def invalidate_match_cache(user_id: UUID) -> None:
+    redis: Redis | None = None
+    try:
+        redis = await get_redis()
+        await redis.delete(match_cache_key(user_id))
+    except RedisError:
+        return
+    finally:
+        if redis is not None:
+            await redis.aclose()
+
+
 def build_matched_user(user: User, similarity_score: float) -> MatchedUserRead:
     return MatchedUserRead(
         id=user.id,
@@ -167,6 +180,48 @@ def build_matched_user(user: User, similarity_score: float) -> MatchedUserRead:
         created_at=user.created_at,
         similarity_score=similarity_score,
     )
+
+
+def valid_embedding(value: object) -> list[float]:
+    if not isinstance(value, list):
+        return []
+    embedding: list[float] = []
+    for item in value:
+        if not isinstance(item, int | float):
+            return []
+        embedding.append(float(item))
+    return embedding
+
+
+async def generate_and_store_embedding(db: AsyncSession, user: User) -> list[float]:
+    skills = normalize_skills(user.skills or [])
+    if not skills:
+        user.embedding = None
+        await invalidate_match_cache(user.id)
+        return []
+
+    embedding = await get_skill_embedding(skills)
+    user.embedding = embedding
+    db.add(user)
+    await db.flush()
+    await invalidate_match_cache(user.id)
+    return embedding
+
+
+async def try_generate_and_store_embedding(db: AsyncSession, user: User) -> list[float]:
+    if settings.OPENAI_API_KEY == "sk-test":
+        return valid_embedding(user.embedding)
+    try:
+        return await generate_and_store_embedding(db, user)
+    except (OpenAIError, HTTPException, RedisError):
+        return valid_embedding(user.embedding)
+
+
+async def embedding_for_user(db: AsyncSession, user: User) -> list[float]:
+    embedding = valid_embedding(user.embedding)
+    if embedding:
+        return embedding
+    return await generate_and_store_embedding(db, user)
 
 
 async def match_users(
@@ -182,7 +237,7 @@ async def match_users(
     if not current_skills:
         return []
 
-    current_embedding = await get_skill_embedding(current_skills)
+    current_embedding = await embedding_for_user(db, current_user)
     if not current_embedding:
         return []
 
@@ -199,7 +254,7 @@ async def match_users(
 
     matches: list[MatchedUserRead] = []
     for candidate in candidates:
-        candidate_embedding = await get_skill_embedding(candidate.skills or [])
+        candidate_embedding = await embedding_for_user(db, candidate)
         score = cosine_similarity(current_embedding, candidate_embedding)
         if score > 0:
             matches.append(build_matched_user(candidate, score))
@@ -207,4 +262,5 @@ async def match_users(
     matches.sort(key=lambda match: match.similarity_score, reverse=True)
     top_matches = matches[:top_k]
     await write_cached_matches(current_user.id, top_matches)
+    await db.commit()
     return top_matches
