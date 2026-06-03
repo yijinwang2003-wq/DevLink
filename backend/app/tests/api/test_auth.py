@@ -1,6 +1,8 @@
 import pytest
 from httpx import AsyncClient
 
+from app.core.rate_limit import limiter
+
 
 @pytest.mark.asyncio()
 async def test_register_creates_user(client: AsyncClient) -> None:
@@ -100,3 +102,28 @@ async def test_logout_clears_refresh_cookie(client: AsyncClient, test_user) -> N
 
     assert response.status_code == 200
     assert response.cookies.get("refresh_token") is None
+
+
+@pytest.mark.asyncio()
+async def test_register_rate_limit_returns_json_429(client: AsyncClient) -> None:
+    previous_enabled = limiter.enabled
+    limiter.enabled = True
+    limiter.reset()
+    try:
+        last_response = None
+        for index in range(6):
+            last_response = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": f"rate{index}@example.com",
+                    "username": f"rate{index}",
+                    "password": "password123",
+                },
+            )
+
+        assert last_response is not None
+        assert last_response.status_code == 429
+        assert last_response.json() == {"detail": "Rate limit exceeded"}
+    finally:
+        limiter.reset()
+        limiter.enabled = previous_enabled

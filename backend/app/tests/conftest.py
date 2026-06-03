@@ -14,6 +14,7 @@ os.environ.setdefault(
 os.environ.setdefault("SECRET_KEY", "test_secret_key_32_chars_long_value")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test")
+os.environ.setdefault("DISABLE_RATE_LIMITING", "true")
 
 from app.core.security import create_access_token  # noqa: E402
 from app.db.base import Base  # noqa: E402

@@ -248,8 +248,9 @@ async def test_reindex_endpoint(
         db,
         UserCreate(email="admin@example.com", username="admin", password="password123"),
     )
+    admin.is_superuser = True
     second_user.skills = ["python"]
-    db.add(second_user)
+    db.add_all([admin, second_user])
     await db.commit()
 
     async def fake_embedding(skills: list[str]) -> list[float]:
@@ -270,3 +271,18 @@ async def test_reindex_endpoint(
     }
     await db.refresh(second_user)
     assert second_user.embedding == [0.3, 0.7, 0.2]
+
+
+@pytest.mark.asyncio
+async def test_reindex_endpoint_normal_user_gets_403(
+    client,
+    second_user: User,
+    auth_headers: dict[str, str],
+) -> None:
+    response = await client.post(
+        f"/api/v1/ai/reindex/{second_user.id}",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Admin access required"

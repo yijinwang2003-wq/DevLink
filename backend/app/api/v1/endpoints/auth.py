@@ -1,11 +1,12 @@
 from uuid import UUID
 from datetime import timedelta
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.db.session import get_db
 from app.schemas.user import StatusResponse, Token, UserCreate, UserRead
@@ -17,14 +18,19 @@ REFRESH_COOKIE_NAME = "refresh_token"
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def register(
-    user_create: UserCreate, db: AsyncSession = Depends(get_db)
+    request: Request,
+    user_create: UserCreate,
+    db: AsyncSession = Depends(get_db),
 ) -> UserRead:
     return await create_user(db, user_create)
 
 
 @router.post("/login", response_model=Token)
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
     response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),

@@ -8,6 +8,8 @@ production-style REST APIs, JWT authentication, PostgreSQL persistence, Redis
 feed caching, WebSocket chat, AI skill matching, Docker validation, CI, and test
 coverage.
 
+Live API: TODO
+
 Current scope: backend Phases 1, 2, 3A, 3B, and CI/build validation. OAuth and
 frontend work are intentionally not included yet.
 
@@ -22,9 +24,10 @@ frontend work are intentionally not included yet.
 | Cache / Pub-Sub | Redis 7 |
 | Realtime | FastAPI WebSocket |
 | AI | OpenAI `gpt-4o-mini`, `text-embedding-3-small` |
+| Rate limiting | SlowAPI |
 | Testing | pytest, pytest-asyncio, pytest-cov, httpx |
 | Quality | Ruff format/check |
-| Infra | Docker Compose, backend Dockerfile, GitHub Actions |
+| Infra | Docker Compose, backend Dockerfile, GitHub Actions, Railway config |
 
 ## Architecture Overview
 
@@ -65,6 +68,8 @@ while SQLAlchemy models and Alembic migrations own persistence.
 
 - JWT authentication uses short-lived access tokens and an httpOnly refresh
   token cookie.
+- SlowAPI rate limiting applies a global `100/minute` limit per IP and tighter
+  `5/minute` limits on registration and login.
 - SQLAlchemy is configured with async sessions and PostgreSQL-backed models.
 - Alembic migrations track every schema change for users, follows, posts, chat
   rooms, chat messages, and user embeddings.
@@ -327,6 +332,7 @@ cd backend
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | No | Refresh token lifetime |
 | `OPENAI_API_KEY` | AI matching | Required for live skill extraction and embedding generation |
+| `DISABLE_RATE_LIMITING` | No | Set to `true` only for tests or controlled local debugging |
 
 ## Docker Commands
 
@@ -478,7 +484,10 @@ Example response:
 
 ## Deployment
 
-The backend includes a Dockerfile used by CI build validation:
+Live API: TODO
+
+The backend includes a Dockerfile used by CI build validation and Railway
+deployment:
 
 ```bash
 docker build ./backend -t devlink-backend:ci
@@ -494,3 +503,22 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 Docker Compose provides PostgreSQL 16 and Redis 7 for local integration testing.
 GitHub Actions runs lint, tests against service containers, and backend Docker
 build validation on pushes and pull requests.
+
+Railway deployment files:
+
+- `railway.toml` points Railway at `backend/Dockerfile`, uses `/health` as the
+  healthcheck, and starts Uvicorn on `$PORT`.
+- `backend/Procfile` provides the same web process command for Procfile-based
+  deployment flows.
+
+Required deployment environment variables:
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | Production PostgreSQL async URL |
+| `REDIS_URL` | Production Redis URL |
+| `SECRET_KEY` | JWT signing secret |
+| `OPENAI_API_KEY` | OpenAI API key for AI matching |
+| `ALGORITHM` | Optional, defaults to `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Optional access token TTL |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | Optional refresh token TTL |
