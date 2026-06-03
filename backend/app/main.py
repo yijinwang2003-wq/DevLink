@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api.v1.endpoints import auth, chat, follows, posts, users
+from app.api.v1.endpoints import ai, auth, chat, follows, posts, users
 
 app = FastAPI(title=settings.APP_NAME, version="0.1.0")
 
@@ -21,6 +21,7 @@ app.include_router(posts.router, prefix="/api/v1/posts", tags=["posts"])
 app.include_router(posts.feed_router, prefix="/api/v1/feed", tags=["feed"])
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
 app.include_router(chat.websocket_router, tags=["chat"])
+app.include_router(ai.router, prefix="/api/v1/ai", tags=["ai"])
 
 
 @app.get("/health", response_model=dict[str, str])
