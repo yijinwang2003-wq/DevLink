@@ -7,3 +7,5 @@ __pycache__/
 coverage.xml
 *.pyc
 .DS_Store
+CLAUDE_CODE_PROMPTS.md
+CODEX_PROMPT.md
